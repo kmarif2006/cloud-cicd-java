@@ -83,24 +83,25 @@ jobs:
       - name: "Verify JAR exists"
         run: ls -lh target/app.jar
 
-      # ── Azure login (needed for AKS credentials later) ──────────────
-      - name: "Login to Azure"
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      # ── Get ACR credentials, then log in Docker daemon directly ──────
-      - name: "Get ACR credentials and login Docker"
-        id: acr-login
+      # ── Parse Service Principal JSON from the secret ─────────────────
+      - name: "Extract SP credentials for ACR login"
+        id: sp
         run: |
-          ACR_USERNAME=$(az acr credential show --name ${{ env.ACR_NAME }} --query "username" -o tsv)
-          ACR_PASSWORD=$(az acr credential show --name ${{ env.ACR_NAME }} --query "passwords[0].value" -o tsv)
-          echo "::add-mask::$ACR_PASSWORD"
-          echo "acr_username=$ACR_USERNAME" >> $GITHUB_OUTPUT
-          echo "acr_password=$ACR_PASSWORD" >> $GITHUB_OUTPUT
-          echo "$ACR_PASSWORD" | docker login "${{ env.ACR_NAME }}.azurecr.io" \
-            --username "$ACR_USERNAME" --password-stdin
-          echo "Docker login to ACR succeeded"
+          CLIENT_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['clientId'])")
+          CLIENT_SECRET=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['clientSecret'])")
+          TENANT_ID=$(echo '${{ secrets.AZURE_CREDENTIALS }}' | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['tenantId'])")
+          echo "::add-mask::$CLIENT_SECRET"
+          echo "client_id=$CLIENT_ID"         >> $GITHUB_OUTPUT
+          echo "client_secret=$CLIENT_SECRET" >> $GITHUB_OUTPUT
+          echo "tenant_id=$TENANT_ID"         >> $GITHUB_OUTPUT
+
+      # ── Login Docker to ACR using SP (works without admin enabled) ────
+      - name: "Login to Azure Container Registry"
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_NAME }}.azurecr.io
+          username: ${{ steps.sp.outputs.client_id }}
+          password: ${{ steps.sp.outputs.client_secret }}
 
       # ── Build & push ─────────────────────────────────────────────────
       - name: "Build, tag and push Docker image"
@@ -121,9 +122,15 @@ jobs:
           echo "IMAGE=$IMAGE_REPO:$SHORT_SHA" >> $GITHUB_ENV
           echo "TAG=$SHORT_SHA"               >> $GITHUB_ENV
           echo "IMAGE_REPO=$IMAGE_REPO"       >> $GITHUB_ENV
-          echo "Pushed $IMAGE_REPO:$SHORT_SHA and $IMAGE_REPO:latest"
+          echo "Pushed $IMAGE_REPO:$SHORT_SHA"
 
-      # ── Connect to AKS ────────────────────────────────────────────────
+      # ── Azure login (for AKS credentials) ───────────────────────────
+      - name: "Login to Azure"
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # ── Connect to AKS ───────────────────────────────────────────────
       - name: "Connect to AKS cluster"
         run: |
           az aks get-credentials \
@@ -131,11 +138,11 @@ jobs:
             --name ${{ env.AKS_CLUSTER }} \
             --overwrite-existing
 
-      # ── Install Ansible ───────────────────────────────────────────────
+      # ── Install Ansible ──────────────────────────────────────────────
       - name: "Install Ansible"
         run: pip install ansible-core --quiet
 
-      # ── Deploy via Ansible ────────────────────────────────────────────
+      # ── Deploy via Ansible ───────────────────────────────────────────
       - name: "Deploy with Ansible to AKS"
         run: |
           ansible-playbook \
@@ -157,12 +164,12 @@ jobs:
       - name: "Write job summary"
         if: always()
         run: |
-          echo "## Deployment Summary"                                           >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |"                                               >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|"                                               >> $GITHUB_STEP_SUMMARY
-          echo "| **Image** | \`$IMAGE\` |"                                     >> $GITHUB_STEP_SUMMARY
-          echo "| **Tag** | \`$TAG\` |"                                         >> $GITHUB_STEP_SUMMARY
-          echo "| **Commit** | \`${{ github.sha }}\` |"                         >> $GITHUB_STEP_SUMMARY
-          echo "| **Triggered by** | \`${{ github.actor }}\` |"                 >> $GITHUB_STEP_SUMMARY
-          echo "| **AKS Cluster** | \`${{ env.AKS_CLUSTER }}\` |"              >> $GITHUB_STEP_SUMMARY
-          echo "| **Resource Group** | \`${{ env.RESOURCE_GROUP }}\` |"         >> $GITHUB_STEP_SUMMARY
+          echo "## Deployment Summary"                                            >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |"                                                >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|"                                                >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | \`$IMAGE\` |"                                      >> $GITHUB_STEP_SUMMARY
+          echo "| **Tag** | \`$TAG\` |"                                          >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ github.sha }}\` |"                          >> $GITHUB_STEP_SUMMARY
+          echo "| **Triggered by** | \`${{ github.actor }}\` |"                  >> $GITHUB_STEP_SUMMARY
+          echo "| **AKS Cluster** | \`${{ env.AKS_CLUSTER }}\` |"               >> $GITHUB_STEP_SUMMARY
+          echo "| **Resource Group** | \`${{ env.RESOURCE_GROUP }}\` |"          >> $GITHUB_STEP_SUMMARY
