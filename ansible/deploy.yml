@@ -1,5 +1,5 @@
 ---
-- name: Deploy Task Tracker to Amazon EKS
+- name: Deploy Task Tracker to Azure AKS
   hosts: local
   gather_facts: false
   vars:
@@ -29,7 +29,7 @@
     - name: Get load balancer hostname
       ansible.builtin.command: >-
         kubectl get svc cicd-app-svc
-        -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+        -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
       register: lb
       until: lb.stdout | length > 0
       retries: 20

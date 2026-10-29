@@ -6,9 +6,10 @@ on:
   workflow_dispatch:
 
 env:
-  AWS_REGION: ap-south-1
-  ECR_REPOSITORY: cicd-app
-  EKS_CLUSTER: cicd-cluster
+  ACR_NAME: cicdkma4821
+  IMAGE_NAME: cicd-app
+  RESOURCE_GROUP: cicd-rg
+  AKS_CLUSTER: cicd-aks
 
 jobs:
   build-and-test:
@@ -48,7 +49,7 @@ jobs:
           path: target/app.jar
 
   docker-and-deploy:
-    name: Docker Build, Push and Deploy to EKS
+    name: Docker Build, Push and Deploy to AKS
     needs: build-and-test
     runs-on: ubuntu-latest
     steps:
@@ -61,28 +62,25 @@ jobs:
           name: app-jar
           path: target
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Login to Azure
+        uses: azure/login@v2
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Login to Amazon ECR
-        id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ env.ACR_NAME }}
 
       - name: Build, tag and push Docker image
         run: |
-          IMAGE_REPO=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
+          IMAGE_REPO=${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}
           TAG=${GITHUB_SHA::7}
           docker build --build-arg APP_VERSION=$TAG -t $IMAGE_REPO:$TAG -t $IMAGE_REPO:latest .
           docker push $IMAGE_REPO:$TAG
           docker push $IMAGE_REPO:latest
           echo "IMAGE=$IMAGE_REPO:$TAG" >> $GITHUB_ENV
 
-      - name: Connect to EKS cluster
-        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+      - name: Connect to AKS cluster
+        run: az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_CLUSTER }} --overwrite-existing
 
       - name: Install Ansible
         run: pip install ansible-core
