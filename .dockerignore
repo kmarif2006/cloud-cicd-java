@@ -1,27 +1,30 @@
-# Source and IDE
-src/
-.git/
-.github/
+# Git and CI config (not needed in image)
+.git
+.github
 .gitignore
-.idea/
+
+# IDE files
+.idea
 *.iml
-*.iws
-*.ipr
 
-# Maven build output (except the jar we explicitly COPY)
-target/*/
-target/classes/
-target/test-classes/
-target/surefire-reports/
-target/maven-status/
+# Source files (JAR is pre-built by CI)
+src
 
-# Docs and config not needed in image
+# Maven subdirs — but keep target/app.jar
+target/classes
+target/test-classes
+target/surefire-reports
+target/maven-status
+target/generated-sources
+target/maven-archiver
+
+# Docs and deployment configs
 *.md
 README*
-ansible/
-k8s/
+ansible
+k8s
 
-# OS / temp files
+# OS temp files
 .DS_Store
 Thumbs.db
 *.tmp
