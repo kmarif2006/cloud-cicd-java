@@ -2,10 +2,16 @@ apiVersion: v1
 kind: Service
 metadata:
   name: cicd-app-svc
+  labels:
+    app: cicd-app
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: /actuator/health
 spec:
   type: LoadBalancer
   selector:
     app: cicd-app
   ports:
-    - port: 80
+    - name: http
+      protocol: TCP
+      port: 80
       targetPort: 8080

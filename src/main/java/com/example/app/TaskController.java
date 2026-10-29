@@ -24,11 +24,26 @@ public class TaskController {
         this.version = version;
     }
 
+    // ------------------------------------------------------------------- INFO
+
     @GetMapping("/info")
     public Map<String, String> info() {
         String host = System.getenv().getOrDefault("HOSTNAME", "local");
-        return Map.of("message", message, "version", version, "host", host);
+        return Map.of(
+                "message", message,
+                "version", version,
+                "host",    host
+        );
     }
+
+    // ------------------------------------------------------------------ STATS
+
+    @GetMapping("/stats")
+    public Map<String, Object> stats() {
+        return service.stats();
+    }
+
+    // ------------------------------------------------------------------ TASKS
 
     @GetMapping("/tasks")
     public List<Task> list() {
@@ -37,7 +52,18 @@ public class TaskController {
 
     @PostMapping("/tasks")
     public ResponseEntity<Task> add(@RequestBody Map<String, String> body) {
-        Task created = service.add(body.get("title"));
+        String title    = body.get("title");
+        String priority = body.getOrDefault("priority", "MEDIUM");
+        String dueDate  = body.get("dueDate");
+
+        Task.Priority p;
+        try {
+            p = Task.Priority.valueOf(priority.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            p = Task.Priority.MEDIUM;
+        }
+
+        Task created = service.add(title, p, dueDate);
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
@@ -54,6 +80,8 @@ public class TaskController {
                 ? ResponseEntity.noContent().build()
                 : ResponseEntity.notFound().build();
     }
+
+    // ------------------------------------------------------------- EXCEPTION
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, String>> badRequest(IllegalArgumentException ex) {

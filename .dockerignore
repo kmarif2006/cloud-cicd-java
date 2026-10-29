@@ -1,2 +1,28 @@
-**
-!target/app.jar
+# Source and IDE
+src/
+.git/
+.github/
+.gitignore
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Maven build output (except the jar we explicitly COPY)
+target/*/
+target/classes/
+target/test-classes/
+target/surefire-reports/
+target/maven-status/
+
+# Docs and config not needed in image
+*.md
+README*
+ansible/
+k8s/
+
+# OS / temp files
+.DS_Store
+Thumbs.db
+*.tmp
+*.log

@@ -4,13 +4,18 @@ metadata:
   name: cicd-app
   labels:
     app: cicd-app
+    version: "{{ tag }}"
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+    deployed-by: "ansible"
+    image-tag: "{{ tag }}"
 spec:
   replicas: 2
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 0
-      maxSurge: 1
+      maxUnavailable: 0   # zero-downtime: always keep 2 pods running
+      maxSurge: 1         # allow 1 extra pod during rollout
   selector:
     matchLabels:
       app: cicd-app
@@ -18,12 +23,31 @@ spec:
     metadata:
       labels:
         app: cicd-app
+        version: "{{ tag }}"
     spec:
+      # Security context — run as non-root
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
       containers:
         - name: cicd-app
           image: {{ image }}
+          imagePullPolicy: Always
           ports:
-            - containerPort: 8080
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          # ── Environment ──────────────────────────────────────────────
+          env:
+            - name: APP_VERSION
+              value: "{{ tag }}"
+            - name: JAVA_OPTS
+              value: "-Xms128m -Xmx256m -XX:+UseContainerSupport"
+
+          # ── Resource limits ──────────────────────────────────────────
           resources:
             requests:
               cpu: 100m
@@ -31,15 +55,27 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+
+          # ── Health probes ────────────────────────────────────────────
           readinessProbe:
             httpGet:
               path: /actuator/health/readiness
               port: 8080
             initialDelaySeconds: 20
             periodSeconds: 5
+            failureThreshold: 3
+
           livenessProbe:
             httpGet:
               path: /actuator/health/liveness
               port: 8080
             initialDelaySeconds: 40
             periodSeconds: 10
+            failureThreshold: 3
+
+          # ── Security ────────────────────────────────────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]

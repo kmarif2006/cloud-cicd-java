@@ -1,95 +1,177 @@
-name: CI-CD Pipeline
+name: "CI/CD Pipeline — Azure AKS"
 
+# ── TRIGGER ────────────────────────────────────────────────────────────────
 on:
   push:
     branches: [main]
-  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:          # manual trigger from GitHub UI
 
+# ── GLOBAL ENV ─────────────────────────────────────────────────────────────
 env:
-  ACR_NAME: cicdkma4821
-  IMAGE_NAME: cicd-app
+  ACR_NAME:       cicdkma4821
+  IMAGE_NAME:     cicd-app
   RESOURCE_GROUP: cicd-rg
-  AKS_CLUSTER: cicd-aks
+  AKS_CLUSTER:    cicd-aks
+  JAVA_VERSION:   "17"
 
+# ── JOBS ───────────────────────────────────────────────────────────────────
 jobs:
+
+  # ════════════════════════════════════════════════════════════════════════
+  # JOB 1 — Build, test, package with Maven
+  # ════════════════════════════════════════════════════════════════════════
   build-and-test:
-    name: Build and Test (Maven)
+    name: "🔨 Build & Test (Maven)"
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout source code
+      # 1. Checkout
+      - name: "📥 Checkout source code"
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      # 2. JDK
+      - name: "☕ Set up JDK ${{ env.JAVA_VERSION }}"
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: ${{ env.JAVA_VERSION }}
           cache: maven
 
-      - name: Compile
-        run: mvn -B compile
+      # 3. Compile
+      - name: "🔧 Compile"
+        run: mvn -B compile --no-transfer-progress
 
-      - name: Run unit tests
-        run: mvn -B test
+      # 4. Unit tests
+      - name: "🧪 Run unit tests"
+        run: mvn -B test --no-transfer-progress
 
-      - name: Package application
-        run: mvn -B package -DskipTests
+      # 5. Integration tests (same run but logged separately)
+      - name: "🔬 Run integration tests"
+        run: mvn -B verify -DskipUnitTests=false --no-transfer-progress
 
-      - name: Upload test reports
+      # 6. Package (skip tests — already ran)
+      - name: "📦 Package application"
+        run: mvn -B package -DskipTests --no-transfer-progress
+
+      # 7. Upload Surefire XML for GitHub test summary
+      - name: "📊 Upload test reports"
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-reports
-          path: target/surefire-reports
+          path: target/surefire-reports/
+          retention-days: 30
 
-      - name: Upload jar
+      # 8. Upload JAR for next job
+      - name: "📤 Upload application JAR"
         uses: actions/upload-artifact@v4
         with:
           name: app-jar
           path: target/app.jar
+          retention-days: 1
 
+  # ════════════════════════════════════════════════════════════════════════
+  # JOB 2 — Docker build + push + AKS deploy
+  # ════════════════════════════════════════════════════════════════════════
   docker-and-deploy:
-    name: Docker Build, Push and Deploy to AKS
+    name: "🐳 Docker, Push & Deploy to AKS"
     needs: build-and-test
     runs-on: ubuntu-latest
+    # Only deploy on pushes to main (not PRs)
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+
     steps:
-      - name: Checkout source code
+      # 1. Checkout (needed for Dockerfile, k8s/, ansible/)
+      - name: "📥 Checkout source code"
         uses: actions/checkout@v4
 
-      - name: Download jar
+      # 2. Download the JAR packaged in job 1
+      - name: "📥 Download application JAR"
         uses: actions/download-artifact@v4
         with:
           name: app-jar
           path: target
 
-      - name: Login to Azure
+      # 3. Azure login (service principal stored as repo secret)
+      - name: "🔐 Login to Azure"
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Login to Azure Container Registry
+      # 4. ACR login
+      - name: "🔐 Login to Azure Container Registry"
         run: az acr login --name ${{ env.ACR_NAME }}
 
-      - name: Build, tag and push Docker image
+      # 5. Derive image tag from short git SHA
+      - name: "🏷 Set image tag"
+        id: tag
         run: |
-          IMAGE_REPO=${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}
-          TAG=${GITHUB_SHA::7}
-          docker build --build-arg APP_VERSION=$TAG -t $IMAGE_REPO:$TAG -t $IMAGE_REPO:latest .
-          docker push $IMAGE_REPO:$TAG
-          docker push $IMAGE_REPO:latest
-          echo "IMAGE=$IMAGE_REPO:$TAG" >> $GITHUB_ENV
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IMAGE_REPO="${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}"
+          echo "IMAGE_REPO=$IMAGE_REPO"          >> $GITHUB_ENV
+          echo "TAG=$SHORT_SHA"                  >> $GITHUB_ENV
+          echo "IMAGE=$IMAGE_REPO:$SHORT_SHA"    >> $GITHUB_ENV
+          echo "tag=$SHORT_SHA"                  >> $GITHUB_OUTPUT
 
-      - name: Connect to AKS cluster
-        run: az aks get-credentials --resource-group ${{ env.RESOURCE_GROUP }} --name ${{ env.AKS_CLUSTER }} --overwrite-existing
-
-      - name: Install Ansible
-        run: pip install ansible-core
-
-      - name: Deploy with Ansible
-        run: ansible-playbook -i ansible/inventory.ini ansible/deploy.yml
-
-      - name: Verify deployment status
+      # 6. Build & push Docker image
+      - name: "🐳 Build, tag and push Docker image"
         run: |
-          kubectl get deployment cicd-app
-          kubectl get pods -o wide
+          docker build \
+            --build-arg APP_VERSION=${{ env.TAG }} \
+            -t ${{ env.IMAGE_REPO }}:${{ env.TAG }} \
+            -t ${{ env.IMAGE_REPO }}:latest \
+            .
+          docker push ${{ env.IMAGE_REPO }}:${{ env.TAG }}
+          docker push ${{ env.IMAGE_REPO }}:latest
+          echo "✅ Pushed ${{ env.IMAGE }}"
+
+      # 7. Get AKS credentials
+      - name: "☸ Connect to AKS cluster"
+        run: |
+          az aks get-credentials \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name ${{ env.AKS_CLUSTER }} \
+            --overwrite-existing
+
+      # 8. Install Ansible
+      - name: "📦 Install Ansible"
+        run: |
+          pip install ansible-core --quiet
+
+      # 9. Run Ansible playbook — renders manifest + applies to AKS
+      - name: "🚀 Deploy with Ansible to AKS"
+        run: |
+          ansible-playbook \
+            -i ansible/inventory.ini \
+            ansible/deploy.yml \
+            -v
+
+      # 10. Verify deployment
+      - name: "✅ Verify deployment"
+        run: |
+          echo "── Deployment status ─────────────────────"
+          kubectl get deployment cicd-app -o wide
+          echo ""
+          echo "── Pods ──────────────────────────────────"
+          kubectl get pods -l app=cicd-app -o wide
+          echo ""
+          echo "── Service / LoadBalancer IP ─────────────"
           kubectl get svc cicd-app-svc
+          echo ""
+          echo "── Events (last 5) ───────────────────────"
+          kubectl get events --sort-by='.lastTimestamp' | tail -5
+
+      # 11. Post summary to GitHub job summary
+      - name: "📝 Write job summary"
+        if: always()
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | \`${{ env.IMAGE }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Triggered by** | \`${{ github.actor }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **AKS Cluster** | \`${{ env.AKS_CLUSTER }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Resource Group** | \`${{ env.RESOURCE_GROUP }}\` |" >> $GITHUB_STEP_SUMMARY
