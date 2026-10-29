@@ -1,0 +1,97 @@
+name: CI-CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: cicd-app
+  EKS_CLUSTER: cicd-cluster
+
+jobs:
+  build-and-test:
+    name: Build and Test (Maven)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - name: Compile
+        run: mvn -B compile
+
+      - name: Run unit tests
+        run: mvn -B test
+
+      - name: Package application
+        run: mvn -B package -DskipTests
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: target/surefire-reports
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/app.jar
+
+  docker-and-deploy:
+    name: Docker Build, Push and Deploy to EKS
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Download jar
+        uses: actions/download-artifact@v4
+        with:
+          name: app-jar
+          path: target
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag and push Docker image
+        run: |
+          IMAGE_REPO=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}
+          TAG=${GITHUB_SHA::7}
+          docker build --build-arg APP_VERSION=$TAG -t $IMAGE_REPO:$TAG -t $IMAGE_REPO:latest .
+          docker push $IMAGE_REPO:$TAG
+          docker push $IMAGE_REPO:latest
+          echo "IMAGE=$IMAGE_REPO:$TAG" >> $GITHUB_ENV
+
+      - name: Connect to EKS cluster
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER }} --region ${{ env.AWS_REGION }}
+
+      - name: Install Ansible
+        run: pip install ansible-core
+
+      - name: Deploy with Ansible
+        run: ansible-playbook -i ansible/inventory.ini ansible/deploy.yml
+
+      - name: Verify deployment status
+        run: |
+          kubectl get deployment cicd-app
+          kubectl get pods -o wide
+          kubectl get svc cicd-app-svc

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Task Tracker</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background:#f4f6fb; margin:0; color:#1d2433; }
+    header { background:#232f3e; color:#fff; padding:28px 20px; text-align:center; }
+    header h1 { margin:0 0 6px; font-size:1.5rem; }
+    #meta { margin:0; color:#ff9900; font-size:.9rem; }
+    main { max-width:520px; margin:24px auto; padding:0 16px; }
+    form { display:flex; gap:8px; margin-bottom:16px; }
+    input { flex:1; padding:10px; border:1px solid #c5cbd8; border-radius:6px; font-size:1rem; }
+    button { padding:10px 16px; border:0; border-radius:6px; background:#ff9900; cursor:pointer; font-weight:600; }
+    ul { list-style:none; padding:0; }
+    li { display:flex; align-items:center; gap:10px; background:#fff; padding:10px 12px;
+         margin-bottom:8px; border-radius:6px; box-shadow:0 1px 2px rgba(0,0,0,.08); }
+    li.done span { text-decoration:line-through; color:#8a93a6; }
+    li span { flex:1; cursor:pointer; }
+    li button { background:#e5484d; color:#fff; padding:4px 10px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="msg">Loading...</h1>
+    <p id="meta"></p>
+  </header>
+  <main>
+    <form id="form">
+      <input id="title" placeholder="Add a new task" required>
+      <button type="submit">Add</button>
+    </form>
+    <ul id="list"></ul>
+  </main>
+  <script>
+    const msg = document.getElementById('msg');
+    const meta = document.getElementById('meta');
+    const list = document.getElementById('list');
+    const title = document.getElementById('title');
+
+    async function loadInfo() {
+      const info = await (await fetch('/api/info')).json();
+      msg.textContent = info.message;
+      meta.textContent = 'Version: ' + info.version + '  |  Pod: ' + info.host;
+    }
+
+    async function loadTasks() {
+      const tasks = await (await fetch('/api/tasks')).json();
+      list.replaceChildren();
+      tasks.forEach(t => {
+        const li = document.createElement('li');
+        if (t.done) li.className = 'done';
+        const span = document.createElement('span');
+        span.textContent = t.title;
+        span.onclick = async () => { await fetch('/api/tasks/' + t.id + '/toggle', { method: 'PUT' }); loadTasks(); };
+        const del = document.createElement('button');
+        del.textContent = 'Delete';
+        del.onclick = async () => { await fetch('/api/tasks/' + t.id, { method: 'DELETE' }); loadTasks(); };
+        li.append(span, del);
+        list.appendChild(li);
+      });
+    }
+
+    document.getElementById('form').addEventListener('submit', async e => {
+      e.preventDefault();
+      await fetch('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title.value })
+      });
+      title.value = '';
+      loadTasks();
+    });
+
+    loadInfo();
+    loadTasks();
+  </script>
+</body>
+</html>
