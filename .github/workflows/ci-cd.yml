@@ -43,7 +43,7 @@ jobs:
       - name: "Run unit and integration tests"
         run: mvn -B test --no-transfer-progress
 
-      - name: "Package application (skip tests - already ran)"
+      - name: "Package application"
         run: mvn -B package -DskipTests --no-transfer-progress
 
       - name: "Upload test reports"
@@ -68,7 +68,6 @@ jobs:
     name: "Docker Build, Push and Deploy to AKS"
     needs: build-and-test
     runs-on: ubuntu-latest
-    # Only deploy on pushes to main (not PRs)
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
 
     steps:
@@ -84,22 +83,32 @@ jobs:
       - name: "Verify JAR exists"
         run: ls -lh target/app.jar
 
+      # ── Azure login (needed for AKS credentials later) ──────────────
       - name: "Login to Azure"
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: "Login to Azure Container Registry"
-        run: az acr login --name ${{ env.ACR_NAME }}
+      # ── Get ACR credentials, then log in Docker daemon directly ──────
+      - name: "Get ACR credentials and login Docker"
+        id: acr-login
+        run: |
+          ACR_USERNAME=$(az acr credential show --name ${{ env.ACR_NAME }} --query "username" -o tsv)
+          ACR_PASSWORD=$(az acr credential show --name ${{ env.ACR_NAME }} --query "passwords[0].value" -o tsv)
+          echo "::add-mask::$ACR_PASSWORD"
+          echo "acr_username=$ACR_USERNAME" >> $GITHUB_OUTPUT
+          echo "acr_password=$ACR_PASSWORD" >> $GITHUB_OUTPUT
+          echo "$ACR_PASSWORD" | docker login "${{ env.ACR_NAME }}.azurecr.io" \
+            --username "$ACR_USERNAME" --password-stdin
+          echo "Docker login to ACR succeeded"
 
-      # Use shell variables (not ${{ env.* }}) for values set mid-job
+      # ── Build & push ─────────────────────────────────────────────────
       - name: "Build, tag and push Docker image"
         run: |
           SHORT_SHA="${GITHUB_SHA::7}"
           IMAGE_REPO="${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}"
 
-          echo "Building image: $IMAGE_REPO:$SHORT_SHA"
-
+          echo "Building: $IMAGE_REPO:$SHORT_SHA"
           docker build \
             --build-arg APP_VERSION="$SHORT_SHA" \
             -t "$IMAGE_REPO:$SHORT_SHA" \
@@ -112,8 +121,9 @@ jobs:
           echo "IMAGE=$IMAGE_REPO:$SHORT_SHA" >> $GITHUB_ENV
           echo "TAG=$SHORT_SHA"               >> $GITHUB_ENV
           echo "IMAGE_REPO=$IMAGE_REPO"       >> $GITHUB_ENV
-          echo "Pushed: $IMAGE_REPO:$SHORT_SHA"
+          echo "Pushed $IMAGE_REPO:$SHORT_SHA and $IMAGE_REPO:latest"
 
+      # ── Connect to AKS ────────────────────────────────────────────────
       - name: "Connect to AKS cluster"
         run: |
           az aks get-credentials \
@@ -121,9 +131,11 @@ jobs:
             --name ${{ env.AKS_CLUSTER }} \
             --overwrite-existing
 
+      # ── Install Ansible ───────────────────────────────────────────────
       - name: "Install Ansible"
         run: pip install ansible-core --quiet
 
+      # ── Deploy via Ansible ────────────────────────────────────────────
       - name: "Deploy with Ansible to AKS"
         run: |
           ansible-playbook \
@@ -131,29 +143,26 @@ jobs:
             ansible/deploy.yml \
             -v
 
+      # ── Verify ───────────────────────────────────────────────────────
       - name: "Verify deployment status"
         run: |
-          echo "── Deployment status ─────────────────────"
+          echo "=== Deployment ==="
           kubectl get deployment cicd-app -o wide
-          echo ""
-          echo "── Pods ──────────────────────────────────"
+          echo "=== Pods ==="
           kubectl get pods -l app=cicd-app -o wide
-          echo ""
-          echo "── Service / LoadBalancer IP ─────────────"
+          echo "=== Service ==="
           kubectl get svc cicd-app-svc
-          echo ""
-          echo "── Recent Events ─────────────────────────"
-          kubectl get events --sort-by='.lastTimestamp' | tail -5
 
+      # ── Summary ───────────────────────────────────────────────────────
       - name: "Write job summary"
         if: always()
         run: |
-          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |"     >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|"     >> $GITHUB_STEP_SUMMARY
-          echo "| **Image** | \`$IMAGE\` |"                            >> $GITHUB_STEP_SUMMARY
-          echo "| **Tag** | \`$TAG\` |"                                >> $GITHUB_STEP_SUMMARY
-          echo "| **Commit** | \`${{ github.sha }}\` |"                >> $GITHUB_STEP_SUMMARY
-          echo "| **Triggered by** | \`${{ github.actor }}\` |"        >> $GITHUB_STEP_SUMMARY
-          echo "| **AKS Cluster** | \`${{ env.AKS_CLUSTER }}\` |"      >> $GITHUB_STEP_SUMMARY
-          echo "| **Resource Group** | \`${{ env.RESOURCE_GROUP }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "## Deployment Summary"                                           >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |"                                               >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|"                                               >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | \`$IMAGE\` |"                                     >> $GITHUB_STEP_SUMMARY
+          echo "| **Tag** | \`$TAG\` |"                                         >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ github.sha }}\` |"                         >> $GITHUB_STEP_SUMMARY
+          echo "| **Triggered by** | \`${{ github.actor }}\` |"                 >> $GITHUB_STEP_SUMMARY
+          echo "| **AKS Cluster** | \`${{ env.AKS_CLUSTER }}\` |"              >> $GITHUB_STEP_SUMMARY
+          echo "| **Resource Group** | \`${{ env.RESOURCE_GROUP }}\` |"         >> $GITHUB_STEP_SUMMARY
